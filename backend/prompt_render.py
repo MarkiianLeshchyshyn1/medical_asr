@@ -1,7 +1,9 @@
+from pathlib import Path
+
 from jinja2 import Environment, FileSystemLoader
 
 env = Environment(
-    loader=FileSystemLoader("C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/promts"),
+    loader=FileSystemLoader(Path(__file__).resolve().parent / "promts"),
     autoescape=False
 )
 

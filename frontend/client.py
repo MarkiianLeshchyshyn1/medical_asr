@@ -1,3 +1,5 @@
+import re
+
 import requests
 
 
@@ -10,43 +12,29 @@ class DocumentGenerationClient:
         audio_bytes: bytes,
         audio_filename: str,
         output_format: str,
-    ) -> dict:
+    ) -> tuple[bytes, str, str]:
         response = requests.post(
             f"{self.backend_base_url}/generate-document",
             files={"audio_file": (audio_filename, audio_bytes)},
             data={"output_format": output_format},
             timeout=600,
         )
-        return self._parse_json_response(response)
+        if not response.ok:
+            raise RuntimeError(self._extract_error(response))
 
-    def list_history(self) -> list[dict]:
-        response = requests.get(f"{self.backend_base_url}/history", timeout=30)
-        return self._parse_json_response(response)
-
-    def get_history_item(self, record_id: int) -> dict:
-        response = requests.get(f"{self.backend_base_url}/history/{record_id}", timeout=30)
-        return self._parse_json_response(response)
-
-    def download_audio(self, record_id: int) -> bytes:
-        response = requests.get(f"{self.backend_base_url}/history/{record_id}/audio", timeout=60)
-        return self._parse_bytes_response(response)
-
-    def download_document(self, record_id: int) -> bytes:
-        response = requests.get(f"{self.backend_base_url}/history/{record_id}/document", timeout=60)
-        return self._parse_bytes_response(response)
-
-    def _parse_json_response(self, response: requests.Response):
-        if response.ok:
-            return response.json()
-        raise RuntimeError(self._extract_error(response))
-
-    def _parse_bytes_response(self, response: requests.Response) -> bytes:
-        if response.ok:
-            return response.content
-        raise RuntimeError(self._extract_error(response))
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        filename = self._extract_filename(response) or f"medical_document.{output_format}"
+        return response.content, content_type, filename
 
     def _extract_error(self, response: requests.Response) -> str:
         try:
             return response.json().get("detail", response.text)
         except ValueError:
             return response.text
+
+    def _extract_filename(self, response: requests.Response) -> str | None:
+        content_disposition = response.headers.get("Content-Disposition", "")
+        match = re.search(r'filename="?([^";]+)"?', content_disposition)
+        if not match:
+            return None
+        return match.group(1)

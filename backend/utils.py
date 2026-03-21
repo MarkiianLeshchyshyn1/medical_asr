@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from pydantic import field_validator
 from typing import List, Optional
 from datetime import date
 
@@ -84,3 +85,10 @@ class MedicalCard(BaseModel):
         None,
         description="Original unstructured transcript of the patient encounter for reference or audit."
     )
+
+    @field_validator("document_date", mode="before")
+    @classmethod
+    def normalize_document_date(cls, value):
+        if value in (None, "", "null", "None"):
+            return date.today()
+        return value

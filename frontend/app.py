@@ -1,16 +1,12 @@
-import sys
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import streamlit as st
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from client import DocumentGenerationClient
 
-from config import BACKEND_BASE_URL
-from frontend.client import DocumentGenerationClient
+BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
 
 
 def format_generation_time(elapsed_seconds: float) -> str:
@@ -29,17 +25,10 @@ def apply_helsi_styles() -> None:
                 padding: 28px 24px 22px 24px;
                 color: white;
                 margin-bottom: 18px;
+                text-align: center;
             }
-            .helsi-logo { font-size: 18px; font-weight: 700; margin: 0; white-space: nowrap; }
-            .helsi-subtitle { font-size: 15px; color: rgba(255,255,255,0.88); margin-top: 10px; margin-bottom: 0; }
-            .history-card, .download-card {
-                background: rgba(255, 255, 255, 0.92);
-                border-radius: 18px;
-                padding: 18px;
-                border: 1px solid #d8e7fb;
-                color: #24456f;
-                margin-bottom: 16px;
-            }
+            .helsi-logo { font-size: 32px; font-weight: 800; margin: 0; line-height: 1.2; }
+            .helsi-subtitle { font-size: 20px; color: rgba(255,255,255,0.95); margin-top: 12px; margin-bottom: 0; line-height: 1.35; }
             label, .stRadio label, .stFileUploader label, .stSelectbox label, .stAudioInput label {
                 color: #1f3b63 !important;
                 font-weight: 600;
@@ -73,6 +62,38 @@ def apply_helsi_styles() -> None:
                 color: white;
             }
             .stAlert { border-radius: 16px; }
+            div[data-baseweb="notification"][kind="success"] {
+                background: #ffffff !important;
+                border: 2px solid #1f8a4c !important;
+            }
+            div[data-baseweb="notification"][kind="success"] p {
+                color: #0f2f57 !important;
+                font-weight: 700 !important;
+            }
+            div[data-baseweb="notification"][kind="error"] {
+                background: #ffffff !important;
+                border: 2px solid #c02f2f !important;
+            }
+            div[data-baseweb="notification"][kind="error"] p {
+                color: #4a0f0f !important;
+                font-weight: 700 !important;
+            }
+            .timer-banner {
+                background: #ffffff;
+                border: 2px solid #3f7fca;
+                border-radius: 14px;
+                color: #0f2f57;
+                font-weight: 700;
+                padding: 12px 14px;
+            }
+            .success-banner {
+                background: #ffffff;
+                border: 2px solid #1f8a4c;
+                border-radius: 14px;
+                color: #0f2f57;
+                font-weight: 700;
+                padding: 12px 14px;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -104,7 +125,7 @@ def generate_document_with_live_timer(
     audio_bytes: bytes,
     audio_filename: str,
     output_format: str,
-) -> tuple[dict, float]:
+) -> tuple[bytes, str, str, float]:
     timer_placeholder = st.empty()
     start_time = time.perf_counter()
 
@@ -113,90 +134,20 @@ def generate_document_with_live_timer(
 
         while not future.done():
             elapsed_seconds = time.perf_counter() - start_time
-            timer_placeholder.info(f"Generation in progress: {format_generation_time(elapsed_seconds)}")
+            timer_placeholder.markdown(
+                f'<div class="timer-banner">Generation in progress: {format_generation_time(elapsed_seconds)}</div>',
+                unsafe_allow_html=True,
+            )
             time.sleep(0.1)
 
-        result = future.result()
+        document_bytes, mime_type, filename = future.result()
 
     elapsed_seconds = time.perf_counter() - start_time
-    timer_placeholder.info(f"Generation time: {format_generation_time(elapsed_seconds)}")
-    return result, elapsed_seconds
-
-
-def render_sidebar_history(client: DocumentGenerationClient) -> None:
-    st.sidebar.title("History")
-
-    if st.sidebar.button("New transcription", use_container_width=True):
-        st.session_state["selected_record_id"] = None
-
-    try:
-        history_items = client.list_history()
-    except Exception as e:
-        st.sidebar.error(f"History unavailable: {e}")
-        return
-
-    if not history_items:
-        st.sidebar.info("No history yet.")
-        return
-
-    for item in history_items:
-        label = f"{item['id']} | {item['transcript_preview'] or 'No transcript'}"
-        if st.sidebar.button(label, key=f"history_{item['id']}", use_container_width=True):
-            st.session_state["selected_record_id"] = item["id"]
-
-
-def render_history_detail(client: DocumentGenerationClient, record_id: int) -> None:
-    record = client.get_history_item(record_id)
-    audio_bytes = client.download_audio(record_id)
-    document_bytes = client.download_document(record_id)
-
-    st.markdown(
-        """
-        <div class="helsi-hero">
-            <div class="helsi-logo">Saved transcription</div>
-            <p class="helsi-subtitle">Open previous results and download the source audio or generated document</p>
-        </div>
-        """,
+    timer_placeholder.markdown(
+        f'<div class="timer-banner">Generation time: {format_generation_time(elapsed_seconds)}</div>',
         unsafe_allow_html=True,
     )
-
-    st.markdown(
-        f"""
-        <div class="history-card">
-            <strong>ID:</strong> {record["id"]}<br>
-            <strong>Created:</strong> {record["created_at"]}<br>
-            <strong>Transcript:</strong><br>{record["transcript"]}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown('<div class="download-card"><strong>Source audio</strong><br>Download original WAV file.</div>', unsafe_allow_html=True)
-        st.download_button(
-            label="Download audio",
-            data=audio_bytes,
-            file_name=record["audio_filename"],
-            mime="audio/wav",
-            use_container_width=True,
-        )
-
-    with col2:
-        st.markdown('<div class="download-card"><strong>Generated file</strong><br>Download generated medical document.</div>', unsafe_allow_html=True)
-        mime_type = (
-            "application/pdf"
-            if record["output_format"] == "pdf"
-            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-        st.download_button(
-            label="Download document",
-            data=document_bytes,
-            file_name=record["document_filename"],
-            mime=mime_type,
-            use_container_width=True,
-        )
+    return document_bytes, mime_type, filename, elapsed_seconds
 
 
 def render_generation_view(client: DocumentGenerationClient) -> None:
@@ -223,14 +174,23 @@ def render_generation_view(client: DocumentGenerationClient) -> None:
         return
 
     try:
-        result, _ = generate_document_with_live_timer(
+        document_bytes, mime_type, filename, _ = generate_document_with_live_timer(
             client=client,
             audio_bytes=audio_bytes,
             audio_filename=audio_filename,
             output_format=doc_format.lower(),
         )
-        st.session_state["selected_record_id"] = result["id"]
-        st.rerun()
+        st.markdown(
+            '<div class="success-banner">Document generated successfully.</div>',
+            unsafe_allow_html=True,
+        )
+        st.download_button(
+            label="Download document",
+            data=document_bytes,
+            file_name=filename,
+            mime=mime_type,
+            use_container_width=True,
+        )
     except Exception as e:
         st.error(f"Error: {e}")
 
@@ -240,17 +200,7 @@ def run_app() -> None:
 
     st.set_page_config(page_title="AI Medical Document Generator", page_icon="🩺", layout="wide")
     apply_helsi_styles()
-
-    if "selected_record_id" not in st.session_state:
-        st.session_state["selected_record_id"] = None
-
-    render_sidebar_history(client)
-
-    selected_record_id = st.session_state["selected_record_id"]
-    if selected_record_id is None:
-        render_generation_view(client)
-    else:
-        render_history_detail(client, selected_record_id)
+    render_generation_view(client)
 
 
 run_app()

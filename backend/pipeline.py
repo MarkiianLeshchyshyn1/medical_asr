@@ -11,16 +11,16 @@ from os import getenv
 from dotenv import load_dotenv
 from transformers import AutoModelForSpeechSeq2Seq, WhisperProcessor
 
-from config import (
+from backend.config import (
     MODEL_CACHE_DIR,
     TRANSCRIPTION_LANGUAGE,
     TRANSCRIPTION_MODEL,
     STRUCTURING_MODEL,
     STRUCTURE_LANGUAGE,
 )
-from utils import MedicalCard
-from prompt_render import render_system_prompt, render_user_prompt
-from document_generator import generate_pdf, generate_docx
+from backend.utils import MedicalCard
+from backend.prompt_render import render_system_prompt, render_user_prompt
+from backend.document_generator import generate_pdf, generate_docx
 
 load_dotenv()
 os.environ.setdefault("HF_HOME", MODEL_CACHE_DIR)
@@ -98,24 +98,43 @@ class MainPipeline:
         logger.info("Transcribing audio with Whisper model: %s", TRANSCRIPTION_MODEL)
         audio_array, sampling_rate = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
 
-        inputs = self.transcription_processor(
-            audio_array,
-            sampling_rate=sampling_rate,
-            return_tensors="pt",
-        )
-        input_features = inputs.input_features.to(self.transcription_device)
+        duration_seconds = len(audio_array) / sampling_rate
+        chunk_seconds = 15
 
-        with torch.no_grad():
-            predicted_ids = self.transcription_model.generate(
-                input_features,
-                language=TRANSCRIPTION_LANGUAGE,
-                task="transcribe",
+        def transcribe_chunk(chunk_audio):
+            inputs = self.transcription_processor(
+                chunk_audio,
+                sampling_rate=sampling_rate,
+                return_tensors="pt",
             )
+            input_features = inputs.input_features.to(self.transcription_device)
+            with torch.no_grad():
+                predicted_ids = self.transcription_model.generate(
+                    input_features,
+                    language=TRANSCRIPTION_LANGUAGE,
+                    task="transcribe",
+                )
+            return self.transcription_processor.batch_decode(
+                predicted_ids,
+                skip_special_tokens=True,
+            )[0].strip()
 
-        transcription = self.transcription_processor.batch_decode(
-            predicted_ids,
-            skip_special_tokens=True,
-        )[0].strip()
+        if duration_seconds <= chunk_seconds:
+            transcription = transcribe_chunk(audio_array)
+        else:
+            logger.info("Audio duration %.2fs > %ss, transcribing in chunks", duration_seconds, chunk_seconds)
+            chunk_size = sampling_rate * chunk_seconds
+            parts = []
+            for start in range(0, len(audio_array), chunk_size):
+                end = start + chunk_size
+                chunk_audio = audio_array[start:end]
+                if len(chunk_audio) == 0:
+                    continue
+                chunk_text = transcribe_chunk(chunk_audio)
+                if chunk_text:
+                    parts.append(chunk_text)
+            transcription = " ".join(parts).strip()
+
         logger.info("Total transcription length: %d characters", len(transcription))
         return transcription
 

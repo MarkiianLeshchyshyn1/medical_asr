@@ -5,7 +5,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 import io
-from utils import MedicalCard
+from pathlib import Path
+from backend.utils import MedicalCard
 
 
 def generate_docx(medical_card: MedicalCard) -> bytes:
@@ -44,10 +45,11 @@ def generate_docx(medical_card: MedicalCard) -> bytes:
 
 def generate_pdf(medical_card: MedicalCard) -> bytes:
     buffer = io.BytesIO()
+    font_path = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
 
     # === REGISTER UNICODE FONT ===
     pdfmetrics.registerFont(
-        TTFont("DejaVu", "fonts/DejaVuSans.ttf")
+        TTFont("DejaVu", str(font_path))
     )
 
     doc = SimpleDocTemplate(buffer, pagesize=A4)
