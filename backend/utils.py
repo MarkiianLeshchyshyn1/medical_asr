@@ -81,11 +81,6 @@ class MedicalCard(BaseModel):
         description="Additional clinician notes or observations relevant to the encounter."
     )
 
-    source_transcript: Optional[str] = Field(
-        None,
-        description="Original unstructured transcript of the patient encounter for reference or audit."
-    )
-
     @field_validator("document_date", mode="before")
     @classmethod
     def normalize_document_date(cls, value):

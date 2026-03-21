@@ -1,122 +1,290 @@
+import io
+from datetime import datetime
+from pathlib import Path
+
 from docx import Document
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-import io
-from pathlib import Path
+from reportlab.platypus import Paragraph, SimpleDocTemplate
+
 from backend.utils import MedicalCard
 
 
-def generate_docx(medical_card: MedicalCard) -> bytes:
-    doc = Document()
+class DocxGenerator:
+    def __init__(self, medical_card: MedicalCard, source_transcript: str = ""):
+        self.medical_card = medical_card
+        self.source_transcript = source_transcript
+        self.document = Document()
 
-    doc.add_heading("Medical Record", level=1)
+    def build(self) -> bytes:
+        self._add_generated_at()
+        self._add_title()
+        self._add_patient_section()
+        self._add_complaints_section()
+        self._add_diagnosis_section()
+        self._add_prescriptions_section()
+        self._add_doctor_notes_section()
+        self._add_source_transcript_section()
+        self._add_missing_info_section()
+        return self._to_bytes()
 
-    # Patient
-    doc.add_paragraph(f"Patient name: {medical_card.patient.full_name}")
-    doc.add_paragraph(f"Age: {medical_card.patient.age}")
-    doc.add_paragraph(f"Gender: {medical_card.patient.gender}")
+    def _add_generated_at(self) -> None:
+        self.document.add_paragraph(self._formatted_datetime())
 
-    doc.add_heading("Complaints", level=2)
-    for c in medical_card.complaints:
-        doc.add_paragraph(f"- {c.description} ({c.duration})")
+    def _add_title(self) -> None:
+        self.document.add_heading("Медична картка", level=1)
 
-    if medical_card.diagnosis:
-        doc.add_heading("Diagnosis", level=2)
-        doc.add_paragraph(medical_card.diagnosis.preliminary)
+    def _add_patient_section(self) -> None:
+        patient = self.medical_card.patient
+        self.document.add_paragraph(f"ПІБ пацієнта: {patient.full_name or ''}")
+        self.document.add_paragraph(f"Вік: {patient.age if patient.age is not None else ''}")
+        self.document.add_paragraph(f"Стать: {patient.gender or ''}")
 
-    doc.add_heading("Prescriptions", level=2)
-    for p in medical_card.prescriptions:
-        doc.add_paragraph(f"- {p.name} ({p.dosage}, {p.duration})")
+    def _add_complaints_section(self) -> None:
+        self.document.add_heading("Скарги", level=2)
+        for complaint in self.medical_card.complaints:
+            if complaint.duration:
+                self.document.add_paragraph(f"- {complaint.description} ({complaint.duration})")
+            else:
+                self.document.add_paragraph(f"- {complaint.description}")
 
-    if medical_card.doctor_notes:
-        doc.add_heading("Doctor notes", level=2)
-        doc.add_paragraph(medical_card.doctor_notes)
+    def _add_diagnosis_section(self) -> None:
+        if not self.medical_card.diagnosis:
+            return
+        self.document.add_heading("Діагноз", level=2)
+        self.document.add_paragraph(self.medical_card.diagnosis.preliminary or "")
 
-    # Save to bytes
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
+    def _add_prescriptions_section(self) -> None:
+        self.document.add_heading("Призначення", level=2)
+        for prescription in self.medical_card.prescriptions:
+            details = []
+            if prescription.dosage:
+                details.append(prescription.dosage)
+            if prescription.duration:
+                details.append(prescription.duration)
+            if details:
+                self.document.add_paragraph(f"- {prescription.name} ({', '.join(details)})")
+            else:
+                self.document.add_paragraph(f"- {prescription.name}")
 
-    return buffer.read()
+    def _add_doctor_notes_section(self) -> None:
+        if not self.medical_card.doctor_notes:
+            return
+        self.document.add_heading("Нотатки лікаря", level=2)
+        self.document.add_paragraph(self.medical_card.doctor_notes)
+
+    def _add_source_transcript_section(self) -> None:
+        self.document.add_heading("Транскрипт запису", level=2)
+        self.document.add_paragraph(self.source_transcript or "")
+
+    def _add_missing_info_section(self) -> None:
+        missing_items = self._collect_missing_info()
+        if not missing_items:
+            return
+        self.document.add_heading("Відсутня інформація", level=2)
+        for item in missing_items:
+            self.document.add_paragraph(f"- {item}")
+
+    def _collect_missing_info(self) -> list[str]:
+        missing: list[str] = []
+        patient = self.medical_card.patient
+        if not patient.full_name:
+            missing.append("Відсутня інформація про ПІБ пацієнта")
+        if patient.age is None:
+            missing.append("Відсутня інформація про вік")
+        if not patient.gender:
+            missing.append("Відсутня інформація про стать")
+        if not self.medical_card.complaints:
+            missing.append("Відсутня інформація про скарги")
+        elif any(not complaint.duration for complaint in self.medical_card.complaints):
+            missing.append("Відсутня інформація про тривалість скарг")
+        if not self.medical_card.diagnosis or not self.medical_card.diagnosis.preliminary:
+            missing.append("Відсутня інформація про діагноз")
+        if not self.medical_card.prescriptions:
+            missing.append("Відсутня інформація про призначення")
+        else:
+            if any(not prescription.dosage for prescription in self.medical_card.prescriptions):
+                missing.append("Відсутня інформація про дозування призначень")
+            if any(not prescription.duration for prescription in self.medical_card.prescriptions):
+                missing.append("Відсутня інформація про тривалість призначень")
+        if not self.medical_card.doctor_notes:
+            missing.append("Відсутня інформація про нотатки лікаря")
+        if not self.source_transcript:
+            missing.append("Відсутня інформація про транскрипт запису")
+        return missing
+
+    def _to_bytes(self) -> bytes:
+        buffer = io.BytesIO()
+        self.document.save(buffer)
+        buffer.seek(0)
+        return buffer.read()
+
+    def _formatted_datetime(self) -> str:
+        generated_at = datetime.now().replace(
+            year=self.medical_card.document_date.year,
+            month=self.medical_card.document_date.month,
+            day=self.medical_card.document_date.day,
+        )
+        return generated_at.strftime("%H:%M %d.%m.%Y")
 
 
-def generate_pdf(medical_card: MedicalCard) -> bytes:
-    buffer = io.BytesIO()
-    font_path = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
+class PdfGenerator:
+    def __init__(self, medical_card: MedicalCard, source_transcript: str = ""):
+        self.medical_card = medical_card
+        self.source_transcript = source_transcript
+        self.buffer = io.BytesIO()
+        self.content: list[Paragraph] = []
+        self.document = SimpleDocTemplate(self.buffer, pagesize=A4)
 
-    # === REGISTER UNICODE FONT ===
-    pdfmetrics.registerFont(
-        TTFont("DejaVu", str(font_path))
-    )
+        self.font_name = "DejaVu"
+        self.font_path = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
+        self.title_style: ParagraphStyle | None = None
+        self.heading_style: ParagraphStyle | None = None
+        self.normal_style: ParagraphStyle | None = None
 
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    def build(self) -> bytes:
+        self._setup_font()
+        self._setup_styles()
+        self._add_generated_at()
+        self._add_title()
+        self._add_patient_section()
+        self._add_complaints_section()
+        self._add_diagnosis_section()
+        self._add_prescriptions_section()
+        self._add_doctor_notes_section()
+        self._add_source_transcript_section()
+        self._add_missing_info_section()
+        return self._to_bytes()
 
-    # === CUSTOM STYLES WITH UNICODE FONT ===
-    title_style = ParagraphStyle(
-        name="TitleStyle",
-        fontName="DejaVu",
-        fontSize=16,
-        spaceAfter=14,
-        alignment=1  # center
-    )
+    def _setup_font(self) -> None:
+        pdfmetrics.registerFont(TTFont(self.font_name, str(self.font_path)))
 
-    heading_style = ParagraphStyle(
-        name="HeadingStyle",
-        fontName="DejaVu",
-        fontSize=12,
-        spaceBefore=12,
-        spaceAfter=6
-    )
-
-    normal_style = ParagraphStyle(
-        name="NormalStyle",
-        fontName="DejaVu",
-        fontSize=10,
-        spaceAfter=4
-    )
-
-    content = []
-
-    # === TITLE ===
-    content.append(Paragraph("Medical Record", title_style))
-
-    # === PATIENT INFO ===
-    content.append(Paragraph(f"Patient: {medical_card.patient.full_name or '—'}", normal_style))
-    content.append(Paragraph(f"Age: {medical_card.patient.age or '—'}", normal_style))
-    content.append(Paragraph(f"Gender: {medical_card.patient.gender or '—'}", normal_style))
-
-    # === COMPLAINTS ===
-    content.append(Paragraph("Complaints", heading_style))
-    for c in medical_card.complaints:
-        content.append(
-            Paragraph(f"- {c.description} ({c.duration})", normal_style)
+    def _setup_styles(self) -> None:
+        self.title_style = ParagraphStyle(
+            name="TitleStyle",
+            fontName=self.font_name,
+            fontSize=16,
+            spaceAfter=14,
+            alignment=1,
+        )
+        self.heading_style = ParagraphStyle(
+            name="HeadingStyle",
+            fontName=self.font_name,
+            fontSize=12,
+            spaceBefore=12,
+            spaceAfter=6,
+        )
+        self.normal_style = ParagraphStyle(
+            name="NormalStyle",
+            fontName=self.font_name,
+            fontSize=10,
+            spaceAfter=4,
         )
 
-    # === DIAGNOSIS ===
-    if medical_card.diagnosis:
-        content.append(Paragraph("Diagnosis", heading_style))
-        content.append(
-            Paragraph(medical_card.diagnosis.preliminary, normal_style)
+    def _add_generated_at(self) -> None:
+        self.content.append(Paragraph(self._formatted_datetime(), self.normal_style))
+
+    def _add_title(self) -> None:
+        self.content.append(Paragraph("Медична картка", self.title_style))
+
+    def _add_patient_section(self) -> None:
+        patient = self.medical_card.patient
+        self.content.append(Paragraph(f"ПІБ пацієнта: {patient.full_name or ''}", self.normal_style))
+        self.content.append(Paragraph(f"Вік: {patient.age if patient.age is not None else ''}", self.normal_style))
+        self.content.append(Paragraph(f"Стать: {patient.gender or ''}", self.normal_style))
+
+    def _add_complaints_section(self) -> None:
+        self.content.append(Paragraph("Скарги", self.heading_style))
+        for complaint in self.medical_card.complaints:
+            if complaint.duration:
+                self.content.append(Paragraph(f"- {complaint.description} ({complaint.duration})", self.normal_style))
+            else:
+                self.content.append(Paragraph(f"- {complaint.description}", self.normal_style))
+
+    def _add_diagnosis_section(self) -> None:
+        if not self.medical_card.diagnosis:
+            return
+        self.content.append(Paragraph("Діагноз", self.heading_style))
+        self.content.append(Paragraph(self.medical_card.diagnosis.preliminary or "", self.normal_style))
+
+    def _add_prescriptions_section(self) -> None:
+        self.content.append(Paragraph("Призначення", self.heading_style))
+        for prescription in self.medical_card.prescriptions:
+            details = []
+            if prescription.dosage:
+                details.append(prescription.dosage)
+            if prescription.duration:
+                details.append(prescription.duration)
+            if details:
+                self.content.append(Paragraph(f"- {prescription.name} ({', '.join(details)})", self.normal_style))
+            else:
+                self.content.append(Paragraph(f"- {prescription.name}", self.normal_style))
+
+    def _add_doctor_notes_section(self) -> None:
+        if not self.medical_card.doctor_notes:
+            return
+        self.content.append(Paragraph("Нотатки лікаря", self.heading_style))
+        self.content.append(Paragraph(self.medical_card.doctor_notes, self.normal_style))
+
+    def _add_source_transcript_section(self) -> None:
+        self.content.append(Paragraph("Транскрипт запису", self.heading_style))
+        self.content.append(Paragraph(self.source_transcript or "", self.normal_style))
+
+    def _add_missing_info_section(self) -> None:
+        missing_items = self._collect_missing_info()
+        if not missing_items:
+            return
+        self.content.append(Paragraph("Відсутня інформація", self.heading_style))
+        for item in missing_items:
+            self.content.append(Paragraph(f"- {item}", self.normal_style))
+
+    def _collect_missing_info(self) -> list[str]:
+        missing: list[str] = []
+        patient = self.medical_card.patient
+        if not patient.full_name:
+            missing.append("Відсутня інформація про ПІБ пацієнта")
+        if patient.age is None:
+            missing.append("Відсутня інформація про вік")
+        if not patient.gender:
+            missing.append("Відсутня інформація про стать")
+        if not self.medical_card.complaints:
+            missing.append("Відсутня інформація про скарги")
+        elif any(not complaint.duration for complaint in self.medical_card.complaints):
+            missing.append("Відсутня інформація про тривалість скарг")
+        if not self.medical_card.diagnosis or not self.medical_card.diagnosis.preliminary:
+            missing.append("Відсутня інформація про діагноз")
+        if not self.medical_card.prescriptions:
+            missing.append("Відсутня інформація про призначення")
+        else:
+            if any(not prescription.dosage for prescription in self.medical_card.prescriptions):
+                missing.append("Відсутня інформація про дозування призначень")
+            if any(not prescription.duration for prescription in self.medical_card.prescriptions):
+                missing.append("Відсутня інформація про тривалість призначень")
+        if not self.medical_card.doctor_notes:
+            missing.append("Відсутня інформація про нотатки лікаря")
+        if not self.source_transcript:
+            missing.append("Відсутня інформація про транскрипт запису")
+        return missing
+
+    def _to_bytes(self) -> bytes:
+        self.document.build(self.content)
+        self.buffer.seek(0)
+        return self.buffer.read()
+
+    def _formatted_datetime(self) -> str:
+        generated_at = datetime.now().replace(
+            year=self.medical_card.document_date.year,
+            month=self.medical_card.document_date.month,
+            day=self.medical_card.document_date.day,
         )
+        return generated_at.strftime("%H:%M %d.%m.%Y")
 
-    # === PRESCRIPTIONS ===
-    content.append(Paragraph("Prescriptions", heading_style))
-    for p in medical_card.prescriptions:
-        content.append(
-            Paragraph(f"- {p.name} ({p.dosage}, {p.duration})", normal_style)
-        )
 
-    # === DOCTOR NOTES ===
-    if medical_card.doctor_notes:
-        content.append(Paragraph("Doctor notes", heading_style))
-        content.append(
-            Paragraph(medical_card.doctor_notes, normal_style)
-        )
+def generate_docx(medical_card: MedicalCard, source_transcript: str = "") -> bytes:
+    return DocxGenerator(medical_card, source_transcript).build()
 
-    doc.build(content)
-    buffer.seek(0)
 
-    return buffer.read()
+def generate_pdf(medical_card: MedicalCard, source_transcript: str = "") -> bytes:
+    return PdfGenerator(medical_card, source_transcript).build()

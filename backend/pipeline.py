@@ -158,16 +158,21 @@ class MainPipeline:
             logger.exception("Error during MedicalCard structuring")
             raise
 
-    def _generate_document_bytes(self, medical_card: MedicalCard, output_format: str) -> bytes:
+    def _generate_document_bytes(
+        self,
+        medical_card: MedicalCard,
+        source_transcript: str,
+        output_format: str,
+    ) -> bytes:
         fmt = output_format.lower()
 
         if fmt == "docx":
             logger.info("Generating DOCX document")
-            return generate_docx(medical_card)
+            return generate_docx(medical_card, source_transcript)
 
         if fmt == "pdf":
             logger.info("Generating PDF document")
-            return generate_pdf(medical_card)
+            return generate_pdf(medical_card, source_transcript)
 
         logger.error("Unsupported output format: %s", output_format)
         raise ValueError(f"Unsupported output format: {output_format}")
@@ -178,7 +183,7 @@ class MainPipeline:
         transcribed_text = self._call_model_to_transcribe(audio_file, audio_filename=audio_filename)
         logger.info("Transcription: %s", transcribed_text)
         medical_card = self._call_model_to_structure(transcribed_text)
-        document_bytes = self._generate_document_bytes(medical_card, output_format)
+        document_bytes = self._generate_document_bytes(medical_card, transcribed_text, output_format)
         return document_bytes, transcribed_text
 
     def invoke_pipeline(self, audio_file: bytes, output_format: str, audio_filename: str | None = None):
