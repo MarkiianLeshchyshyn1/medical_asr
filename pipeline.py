@@ -1,24 +1,29 @@
 import os
-os.environ["HF_HOME"] = "D:/hf_cache"  
 
 import io
-import torch
-import librosa
-import tempfile
 import logging
+from pathlib import Path
 
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
+import librosa
+import torch
 from langchain_openai import ChatOpenAI
 from os import getenv
 from dotenv import load_dotenv
+from transformers import AutoModelForSpeechSeq2Seq, WhisperProcessor
 
-from config import MODEL_NAME, DEVICE, SAMPLING_RATE, STRUCTURE_LANGUAGE
+from config import (
+    MODEL_CACHE_DIR,
+    TRANSCRIPTION_LANGUAGE,
+    TRANSCRIPTION_MODEL,
+    STRUCTURING_MODEL,
+    STRUCTURE_LANGUAGE,
+)
 from utils import MedicalCard
 from prompt_render import render_system_prompt, render_user_prompt
 from document_generator import generate_pdf, generate_docx
-# from google import genai
 
 load_dotenv()
+os.environ.setdefault("HF_HOME", MODEL_CACHE_DIR)
 
 logger = logging.getLogger("MainPipeline")
 logger.setLevel(logging.INFO)
@@ -37,70 +42,82 @@ class MainPipeline:
     def __init__(self):
         logger.info("Initializing MainPipeline")
 
-        self.processor = WhisperProcessor.from_pretrained(
-            MODEL_NAME,
-            cache_dir="C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/model"
+        self.transcription_model, self.transcription_processor, self.transcription_device = (
+            self._build_transcription_pipeline()
         )
-        self.model = WhisperForConditionalGeneration.from_pretrained(
-            MODEL_NAME,
-            cache_dir="C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/model"
-        ).to(DEVICE)
+        logger.info("Whisper transcription model initialized")
 
-        logger.info("Whisper model and processor loaded")
+        api_key = getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is not set in the environment.")
 
-        self.llm = ChatOpenAI(
-            api_key=getenv("OPENROUTER_API_KEY"),
+        self.structuring_llm = ChatOpenAI(
+            api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
-            model="gpt-oss-20b",
-            temperature=0.5
+            model=STRUCTURING_MODEL,
+            temperature=0.5,
+            extra_body={"reasoning_effort": "low"}
         ).with_structured_output(MedicalCard)
 
         logger.info("LLM client initialized")
 
-        
-    def _call_model_to_transcribe(self, audio_bytes: bytes) -> str:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
+    def _build_transcription_pipeline(self):
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        try:
-            audio, sr = librosa.load(tmp_path, sr=SAMPLING_RATE)
+        logger.info("Loading Whisper model: %s", TRANSCRIPTION_MODEL)
 
-            chunk_size = 15 * sr  
-            texts = []
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            TRANSCRIPTION_MODEL,
+            cache_dir=MODEL_CACHE_DIR,
+            local_files_only=True,
+            dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+        )
+        processor = WhisperProcessor.from_pretrained(
+            TRANSCRIPTION_MODEL,
+            cache_dir=MODEL_CACHE_DIR,
+            local_files_only=True,
+        )
 
-            logger.info("Audio duration: %.2f sec", len(audio) / sr)
+        model = model.to(device)
+        model.eval()
 
-            for i in range(0, len(audio), chunk_size):
-                chunk = audio[i:i + chunk_size]
+        return model, processor, device
 
-                inputs = self.processor(
-                    chunk,
-                    sampling_rate=sr,
-                    return_tensors="pt"
-                ).to(DEVICE)
+    def _call_model_to_transcribe(self, audio_bytes: bytes, audio_filename: str | None = None) -> str:
+        suffix = Path(audio_filename or "upload.wav").suffix or ".wav"
+        audio_format = suffix.lstrip(".").lower()
 
-                with torch.no_grad():
-                    predicted_ids = self.model.generate(
-                        inputs.input_features,
-                        language="uk",
-                        task="transcribe",
-                    )
+        if audio_format != "wav":
+            raise RuntimeError(
+                f"Unsupported audio format: '{audio_format}'. "
+                "Supported format: wav."
+            )
 
-                text = self.processor.batch_decode(
-                    predicted_ids,
-                    skip_special_tokens=True
-                )[0]
+        logger.info("Transcribing audio with Whisper model: %s", TRANSCRIPTION_MODEL)
+        audio_array, sampling_rate = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
 
-                texts.append(text)
+        inputs = self.transcription_processor(
+            audio_array,
+            sampling_rate=sampling_rate,
+            return_tensors="pt",
+        )
+        input_features = inputs.input_features.to(self.transcription_device)
 
-            full_text = " ".join(texts)
-            logger.info("Total transcription length: %d characters", len(full_text))
+        with torch.no_grad():
+            predicted_ids = self.transcription_model.generate(
+                input_features,
+                language=TRANSCRIPTION_LANGUAGE,
+                task="transcribe",
+            )
 
-            return full_text
-
-        finally:
-            os.remove(tmp_path)
+        transcription = self.transcription_processor.batch_decode(
+            predicted_ids,
+            skip_special_tokens=True,
+        )[0].strip()
+        logger.info("Total transcription length: %d characters", len(transcription))
+        return transcription
 
 
     def _call_model_to_structure(self, transcribed_text: str) -> MedicalCard:
@@ -110,7 +127,7 @@ class MainPipeline:
         user_prompt = render_user_prompt(transcript=transcribed_text)
 
         try:
-            result = self.llm.invoke([
+            result = self.structuring_llm.invoke([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ])
@@ -122,27 +139,37 @@ class MainPipeline:
             logger.exception("Error during MedicalCard structuring")
             raise
 
-    def invoke_pipeline(self, audio_file: bytes, output_format: str):
-        logger.info(f"Pipeline started | format={output_format}")
+    def _generate_document_bytes(self, medical_card: MedicalCard, output_format: str) -> bytes:
+        fmt = output_format.lower()
 
+        if fmt == "docx":
+            logger.info("Generating DOCX document")
+            return generate_docx(medical_card)
+
+        if fmt == "pdf":
+            logger.info("Generating PDF document")
+            return generate_pdf(medical_card)
+
+        logger.error("Unsupported output format: %s", output_format)
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+    def process_audio(self, audio_file: bytes, output_format: str, audio_filename: str | None = None) -> tuple[bytes, str]:
+        logger.info("Pipeline started | format=%s", output_format)
+
+        transcribed_text = self._call_model_to_transcribe(audio_file, audio_filename=audio_filename)
+        logger.info("Transcription: %s", transcribed_text)
+        medical_card = self._call_model_to_structure(transcribed_text)
+        document_bytes = self._generate_document_bytes(medical_card, output_format)
+        return document_bytes, transcribed_text
+
+    def invoke_pipeline(self, audio_file: bytes, output_format: str, audio_filename: str | None = None):
         try:
-            transcribed_text = self._call_model_to_transcribe(audio_file)
-            logger.info("Transcription: %s", transcribed_text)
-            medical_card = self._call_model_to_structure(transcribed_text)
-
-            fmt = output_format.lower()
-
-            if fmt == "docx":
-                logger.info("Generating DOCX document")
-                return generate_docx(medical_card)
-
-            elif fmt == "pdf":
-                logger.info("Generating PDF document")
-                return generate_pdf(medical_card)
-
-            else:
-                logger.error(f"Unsupported output format: {output_format}")
-                raise ValueError(f"Unsupported output format: {output_format}")
+            document_bytes, _ = self.process_audio(
+                audio_file=audio_file,
+                output_format=output_format,
+                audio_filename=audio_filename,
+            )
+            return document_bytes
 
         except ValueError as e:
             logger.error(f"Pipeline input error: {e}")

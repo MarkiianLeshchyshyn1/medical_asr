@@ -1,29 +1,21 @@
-# ===== CORE =====
 torch
 transformers==4.56.2
 datasets>=3.4.1,<4.0.0
 huggingface_hub>=0.34.0
-
-# ===== AUDIO =====
+fastapi
+uvicorn
+python-multipart
 librosa
 soundfile
 torchcodec
-
-# ===== EVALUATION =====
-evaluate
-jiwer
-
-# ===== UNSLOTH STACK =====
-unsloth
-unsloth_zoo
-bitsandbytes
-accelerate
-peft
-trl==0.22.2
-cut_cross_entropy
-sentencepiece
-protobuf
-hf_transfer
-
-# ===== OPTIONAL (depends on torch version) =====
-# xformers==0.0.29.post3
+jinja2
+langchain-openai
+openai
+pydantic
+python-docx
+python-dotenv
+reportlab
+requests
+sqlalchemy
+streamlit
+psycopg2-binary

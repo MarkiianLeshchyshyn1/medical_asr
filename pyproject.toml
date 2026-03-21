@@ -1,0 +1,53 @@
+[project]
+name = "train"
+version = "0.1.0"
+description = "Medical audio transcription and document generation pipeline."
+requires-python = ">=3.10"
+dependencies = [
+  "datasets>=3.4.1,<4.0.0",
+  "fastapi",
+  "huggingface_hub>=0.34.0",
+  "jinja2",
+  "langchain-openai",
+  "librosa",
+  "openai",
+  "python-multipart",
+  "pydantic",
+  "python-docx",
+  "python-dotenv",
+  "reportlab",
+  "requests",
+  "sqlalchemy",
+  "soundfile",
+  "streamlit",
+  "torch",
+  "torchcodec",
+  "transformers==4.56.2",
+  "uvicorn",
+  "psycopg2-binary",
+]
+
+[project.optional-dependencies]
+eval = [
+  "evaluate",
+  "jiwer",
+]
+train = [
+  "accelerate",
+  "bitsandbytes",
+  "cut-cross-entropy",
+  "hf-transfer",
+  "peft",
+  "protobuf",
+  "sentencepiece",
+  "trl==0.22.2",
+  "unsloth",
+  "unsloth-zoo",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false

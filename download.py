@@ -1,13 +1,18 @@
-# download_model.py
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
+import os
 
-WhisperForConditionalGeneration.from_pretrained(
-    "openai/whisper-large-v3",
-    cache_dir="C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/model"
+from transformers import AutoModelForSpeechSeq2Seq, WhisperProcessor
+
+MODEL_NAME = "openai/whisper-large-v3"
+CACHE_DIR = "C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/model"
+os.environ.setdefault("HF_HOME", CACHE_DIR)
+
+AutoModelForSpeechSeq2Seq.from_pretrained(
+    MODEL_NAME,
+    cache_dir=CACHE_DIR,
 )
 WhisperProcessor.from_pretrained(
-    "openai/whisper-large-v3",
-    cache_dir="C:/Users/markiian_leshchyshyn/Documents/NULP/Diploma/code/train/model"
+    MODEL_NAME,
+    cache_dir=CACHE_DIR,
 )
 
-print("Model downloaded and cached.")
+print(f"Base model '{MODEL_NAME}' downloaded and cached.")
