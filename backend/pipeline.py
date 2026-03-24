@@ -1,7 +1,7 @@
 import os
 
 import io
-import logging
+import re
 from pathlib import Path
 
 import librosa
@@ -18,23 +18,19 @@ from backend.config import (
     STRUCTURING_MODEL,
     STRUCTURE_LANGUAGE,
 )
-from backend.utils import MedicalCard
-from backend.prompt_render import render_system_prompt, render_user_prompt
+from backend.prompt_render import (
+    render_dialogue_labeling_system_prompt,
+    render_dialogue_labeling_user_prompt,
+    render_system_prompt,
+    render_user_prompt,
+)
+from backend.utils import DialogueTurns, MedicalCard, SpeakerSegmentLabels, get_logger
 from backend.document_generator import generate_pdf, generate_docx
 
 load_dotenv()
 os.environ.setdefault("HF_HOME", MODEL_CACHE_DIR)
 
-logger = logging.getLogger("MainPipeline")
-logger.setLevel(logging.INFO)
-
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] %(name)s — %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+logger = get_logger("backend.pipeline")
 
 
 class MainPipeline:
@@ -58,6 +54,14 @@ class MainPipeline:
             temperature=0.5,
             extra_body={"reasoning_effort": "low"}
         ).with_structured_output(MedicalCard)
+
+        self.dialogue_labeling_llm = ChatOpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            model=STRUCTURING_MODEL,
+            temperature=0,
+            extra_body={"reasoning_effort": "low"}
+        ).with_structured_output(SpeakerSegmentLabels)
 
         logger.info("LLM client initialized")
 
@@ -177,28 +181,116 @@ class MainPipeline:
         logger.error("Unsupported output format: %s", output_format)
         raise ValueError(f"Unsupported output format: {output_format}")
 
-    def process_audio(self, audio_file: bytes, output_format: str, audio_filename: str | None = None) -> tuple[bytes, str]:
-        logger.info("Pipeline started | format=%s", output_format)
-
+    def transcribe_audio(self, audio_file: bytes, audio_filename: str | None = None) -> str:
+        logger.info("Transcription step started")
         transcribed_text = self._call_model_to_transcribe(audio_file, audio_filename=audio_filename)
         logger.info("Transcription: %s", transcribed_text)
-        medical_card = self._call_model_to_structure(transcribed_text)
-        document_bytes = self._generate_document_bytes(medical_card, transcribed_text, output_format)
-        return document_bytes, transcribed_text
+        return transcribed_text
 
-    def invoke_pipeline(self, audio_file: bytes, output_format: str, audio_filename: str | None = None):
+    def split_transcript_into_sentences(self, transcript: str) -> list[str]:
+        cleaned_transcript = " ".join(transcript.split()).strip()
+        if not cleaned_transcript:
+            return []
+
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned_transcript)
+        normalized_sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+
+        if normalized_sentences:
+            return normalized_sentences
+
+        return [cleaned_transcript]
+
+    def number_transcript_sentences(self, transcript: str) -> str:
+        sentences = self.split_transcript_into_sentences(transcript)
+        return "\n".join(
+            f"[{index}] {sentence} [{index}]"
+            for index, sentence in enumerate(sentences, start=1)
+        )
+
+    def label_transcript_speakers(self, numbered_transcript: str) -> SpeakerSegmentLabels:
+        cleaned_numbered_transcript = numbered_transcript.strip()
+        if not cleaned_numbered_transcript:
+            raise ValueError("Numbered transcript must not be empty.")
+
+        system_prompt = render_dialogue_labeling_system_prompt()
+        user_prompt = render_dialogue_labeling_user_prompt(
+            numbered_transcript=cleaned_numbered_transcript,
+        )
+
         try:
-            document_bytes, _ = self.process_audio(
-                audio_file=audio_file,
-                output_format=output_format,
-                audio_filename=audio_filename,
+            result = self.dialogue_labeling_llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+        except Exception:
+            logger.exception("Error during dialogue speaker labeling")
+            raise
+
+        expected_ids = self._extract_numbered_transcript_ids(cleaned_numbered_transcript)
+        returned_ids = [segment.id for segment in result.segments]
+
+        if returned_ids != expected_ids:
+            raise ValueError(
+                "Speaker labeling response must contain every transcript id exactly once and in order."
             )
-            return document_bytes
 
-        except ValueError as e:
-            logger.error(f"Pipeline input error: {e}")
-            raise RuntimeError(f"Pipeline input error: {e}")
+        return result
 
-        except Exception as e:
-            logger.exception("Pipeline execution failed")
-            raise RuntimeError(f"Pipeline execution failed: {e}")
+    def _extract_numbered_transcript_ids(self, numbered_transcript: str) -> list[int]:
+        ids = [int(match) for match in re.findall(r"\[(\d+)\]", numbered_transcript)]
+        unique_ids: list[int] = []
+        for segment_id in ids:
+            if not unique_ids or unique_ids[-1] != segment_id:
+                unique_ids.append(segment_id)
+        return unique_ids
+
+    def build_dialogue_turns(
+        self,
+        numbered_transcript: str,
+        speaker_labels: SpeakerSegmentLabels,
+    ) -> DialogueTurns:
+        segment_text_by_id = self._extract_segment_texts(numbered_transcript)
+        turns: list[dict[str, str]] = []
+
+        for segment in speaker_labels.segments:
+            segment_text = segment_text_by_id.get(segment.id, "").strip()
+            if not segment_text:
+                continue
+
+            if turns and turns[-1]["speaker"] == segment.speaker:
+                turns[-1]["text"] = f'{turns[-1]["text"]} {segment_text}'.strip()
+                continue
+
+            turns.append({
+                "speaker": segment.speaker,
+                "text": segment_text,
+            })
+
+        return DialogueTurns.model_validate({"turns": turns})
+
+    def format_dialogue_turns(self, dialogue_turns: DialogueTurns) -> str:
+        speaker_names = {
+            "doctor": "Лікар",
+            "patient": "Пацієнт",
+        }
+        return "\n\n".join(
+            f'{speaker_names[turn.speaker]}: {turn.text}'
+            for turn in dialogue_turns.turns
+        )
+
+    def _extract_segment_texts(self, numbered_transcript: str) -> dict[int, str]:
+        matches = re.findall(r"\[(\d+)\]\s*(.*?)\s*\[\1\]", numbered_transcript, flags=re.DOTALL)
+        return {
+            int(segment_id): text.strip()
+            for segment_id, text in matches
+            if text.strip()
+        }
+
+    def generate_document_from_transcript(self, transcript: str, output_format: str) -> bytes:
+        logger.info("Document generation from approved transcript started | format=%s", output_format)
+        cleaned_transcript = transcript.strip()
+        if not cleaned_transcript:
+            raise ValueError("Transcript must not be empty.")
+
+        medical_card = self._call_model_to_structure(cleaned_transcript)
+        return self._generate_document_bytes(medical_card, cleaned_transcript, output_format)

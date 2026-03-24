@@ -13,6 +13,18 @@ def format_generation_time(elapsed_seconds: float) -> str:
     return f"{elapsed_seconds:.2f} sec"
 
 
+def reset_review_state() -> None:
+    st.session_state.pop("transcript", None)
+    st.session_state.pop("numbered_transcript", None)
+    st.session_state.pop("segments", None)
+    st.session_state.pop("dialogue_turns", None)
+    st.session_state.pop("dialogue_text", None)
+    st.session_state.pop("transcript_source_key", None)
+    st.session_state.pop("document_bytes", None)
+    st.session_state.pop("document_mime_type", None)
+    st.session_state.pop("document_filename", None)
+
+
 def apply_helsi_styles() -> None:
     st.markdown(
         """
@@ -122,15 +134,14 @@ def render_audio_source_selector() -> tuple[bytes | None, str | None]:
 
 def generate_document_with_live_timer(
     client: DocumentGenerationClient,
-    audio_bytes: bytes,
-    audio_filename: str,
+    transcript: str,
     output_format: str,
 ) -> tuple[bytes, str, str, float]:
     timer_placeholder = st.empty()
     start_time = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(client.generate_document, audio_bytes, audio_filename, output_format)
+        future = executor.submit(client.generate_document_from_transcript, transcript, output_format)
 
         while not future.done():
             elapsed_seconds = time.perf_counter() - start_time
@@ -150,6 +161,35 @@ def generate_document_with_live_timer(
     return document_bytes, mime_type, filename, elapsed_seconds
 
 
+def transcribe_audio_with_live_timer(
+    client: DocumentGenerationClient,
+    audio_bytes: bytes,
+    audio_filename: str,
+) -> tuple[str, str, list[dict], list[dict], str, float]:
+    timer_placeholder = st.empty()
+    start_time = time.perf_counter()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(client.transcribe_audio, audio_bytes, audio_filename)
+
+        while not future.done():
+            elapsed_seconds = time.perf_counter() - start_time
+            timer_placeholder.markdown(
+                f'<div class="timer-banner">Transcription in progress: {format_generation_time(elapsed_seconds)}</div>',
+                unsafe_allow_html=True,
+            )
+            time.sleep(0.1)
+
+        transcript, numbered_transcript, segments, dialogue_turns, dialogue_text = future.result()
+
+    elapsed_seconds = time.perf_counter() - start_time
+    timer_placeholder.markdown(
+        f'<div class="timer-banner">Transcription time: {format_generation_time(elapsed_seconds)}</div>',
+        unsafe_allow_html=True,
+    )
+    return transcript, numbered_transcript, segments, dialogue_turns, dialogue_text, elapsed_seconds
+
+
 def render_generation_view(client: DocumentGenerationClient) -> None:
     st.markdown(
         """
@@ -163,36 +203,88 @@ def render_generation_view(client: DocumentGenerationClient) -> None:
 
     st.divider()
     audio_bytes, audio_filename = render_audio_source_selector()
-    doc_format = st.selectbox("Document format", ["PDF", "DOCX"])
     st.divider()
 
-    if not st.button("Generate document", use_container_width=True):
-        return
-
     if audio_bytes is None or audio_filename is None:
-        st.warning("Please upload or record a WAV audio file.")
+        st.info("Please upload or record a WAV audio file.")
         return
 
-    try:
-        document_bytes, mime_type, filename, _ = generate_document_with_live_timer(
-            client=client,
-            audio_bytes=audio_bytes,
-            audio_filename=audio_filename,
-            output_format=doc_format.lower(),
-        )
-        st.markdown(
-            '<div class="success-banner">Document generated successfully.</div>',
-            unsafe_allow_html=True,
-        )
-        st.download_button(
-            label="Download document",
-            data=document_bytes,
-            file_name=filename,
-            mime=mime_type,
-            use_container_width=True,
-        )
-    except Exception as e:
-        st.error(f"Error: {e}")
+    current_source_key = f"{audio_filename}:{len(audio_bytes)}"
+    previous_source_key = st.session_state.get("transcript_source_key")
+    if previous_source_key != current_source_key:
+        reset_review_state()
+        st.session_state["transcript_source_key"] = current_source_key
+
+    if st.button("Transcribe audio", use_container_width=True):
+        try:
+            transcript, numbered_transcript, segments, dialogue_turns, dialogue_text, _ = transcribe_audio_with_live_timer(
+                client=client,
+                audio_bytes=audio_bytes,
+                audio_filename=audio_filename,
+            )
+            st.session_state["transcript"] = transcript
+            st.session_state["numbered_transcript"] = numbered_transcript
+            st.session_state["segments"] = segments
+            st.session_state["dialogue_turns"] = dialogue_turns
+            st.session_state["dialogue_text"] = dialogue_text
+            st.session_state.pop("document_bytes", None)
+            st.session_state.pop("document_mime_type", None)
+            st.session_state.pop("document_filename", None)
+        except Exception as e:
+            st.error(f"Error: {e}")
+            return
+
+    dialogue_text_value = st.session_state.get("dialogue_text")
+    if dialogue_text_value is None:
+        return
+
+    st.divider()
+    st.subheader("Doctor review")
+    approved_transcript = st.text_area(
+        "Review and edit transcript before approval",
+        height=300,
+        key="dialogue_text",
+    )
+    doc_format = st.selectbox("Document format", ["PDF", "DOCX"])
+    is_approved = st.checkbox("I confirm that the transcript is reviewed and approved by the doctor.")
+
+    if st.button("Generate document", use_container_width=True):
+        if not approved_transcript.strip():
+            st.warning("Transcript must not be empty.")
+            return
+
+        if not is_approved:
+            st.warning("Please approve the transcript before generating the document.")
+            return
+
+        try:
+            document_bytes, mime_type, filename, _ = generate_document_with_live_timer(
+                client=client,
+                transcript=approved_transcript,
+                output_format=doc_format.lower(),
+            )
+            st.session_state["document_bytes"] = document_bytes
+            st.session_state["document_mime_type"] = mime_type
+            st.session_state["document_filename"] = filename
+        except Exception as e:
+            st.error(f"Error: {e}")
+            return
+
+    document_bytes = st.session_state.get("document_bytes")
+    if document_bytes is None:
+        return
+
+    st.markdown(
+        '<div class="success-banner">Document generated successfully.</div>',
+        unsafe_allow_html=True,
+    )
+    st.download_button(
+        label="Download document",
+        data=document_bytes,
+        file_name=st.session_state["document_filename"],
+        mime=st.session_state["document_mime_type"],
+        use_container_width=True,
+    )
 
 
 def run_app() -> None:

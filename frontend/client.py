@@ -7,16 +7,35 @@ class DocumentGenerationClient:
     def __init__(self, backend_base_url: str):
         self.backend_base_url = backend_base_url.rstrip("/")
 
-    def generate_document(
+    def transcribe_audio(
         self,
         audio_bytes: bytes,
         audio_filename: str,
+    ) -> tuple[str, str, list[dict], list[dict], str]:
+        response = requests.post(
+            f"{self.backend_base_url}/transcribe-audio",
+            files={"audio_file": (audio_filename, audio_bytes)},
+            timeout=600,
+        )
+        if not response.ok:
+            raise RuntimeError(self._extract_error(response))
+        payload = response.json()
+        return (
+            payload["transcript"],
+            payload["numbered_transcript"],
+            payload["segments"],
+            payload["dialogue_turns"],
+            payload["dialogue_text"],
+        )
+
+    def generate_document_from_transcript(
+        self,
+        transcript: str,
         output_format: str,
     ) -> tuple[bytes, str, str]:
         response = requests.post(
-            f"{self.backend_base_url}/generate-document",
-            files={"audio_file": (audio_filename, audio_bytes)},
-            data={"output_format": output_format},
+            f"{self.backend_base_url}/generate-document-from-transcript",
+            json={"transcript": transcript, "output_format": output_format},
             timeout=600,
         )
         if not response.ok:
