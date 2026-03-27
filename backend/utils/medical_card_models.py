@@ -23,11 +23,21 @@ class PatientInfo(BaseModel):
 class MedicalComplaint(BaseModel):
     description: str = Field(
         ...,
-        description="Основна скарга або симптом, описані пацієнтом своїми словами.",
+        description="Скарга, симптом - описані пацієнтом під час розмови із лікарем",
     )
     duration: Optional[str] = Field(
-        None,
+        "Тривалість не зазначена",
         description="Зазначена тривалість симптомів та їх часовий перебіг.",
+    )
+
+class CurrentMedication(BaseModel):
+    name: Optional[str] = Field(
+        "Не приймає ніяких препаратів",
+        description="Назва препарату, який пацієнт зараз приймає або приймав раніше.",
+    )
+    duration: Optional[str] = Field(
+        "Тривалість не зазначена",
+        description="Тривалість прийому препарату.",
     )
 
 
@@ -35,10 +45,6 @@ class Diagnosis(BaseModel):
     preliminary: Optional[str] = Field(
         None,
         description="Попередній клінічний діагноз на основі первинної оцінки та наявної інформації.",
-    )
-    icd10: Optional[str] = Field(
-        None,
-        description="Код діагнозу за МКХ-10, що відповідає попередньому діагнозу, якщо він відомий.",
     )
 
 
@@ -48,21 +54,16 @@ class Prescription(BaseModel):
         description="Назва призначеного препарату, лікування або клінічної рекомендації.",
     )
     dosage: Optional[str] = Field(
-        None,
+        "Дозування не зазначено",
         description="Дозування або інструкції щодо застосування призначеного лікування.",
     )
     duration: Optional[str] = Field(
-        None,
+        "Тривалість не зазначена",
         description="Очікувана тривалість призначеного лікування або втручання.",
     )
 
 
-class MedicalCard(BaseModel):
-    document_date: date = Field(
-        default_factory=date.today,
-        description="Дата створення медичного запису.",
-    )
-
+class MedicalCardBase(BaseModel):
     patient: PatientInfo
 
     complaints: List[MedicalComplaint] = Field(
@@ -70,16 +71,35 @@ class MedicalCard(BaseModel):
         description="Список скарг пацієнта, озвучених під час медичного звернення.",
     )
 
-    diagnosis: Optional[Diagnosis] = None
+    current_medications: List[CurrentMedication] = Field(
+        default_factory=list,
+        description="Список препаратів, які пацієнт зараз приймає або приймав раніше.",
+    )
+
+    diagnosis: Optional[Diagnosis] = Field(
+        None,
+        description="Попередній клінічний діагноз, поставлений лікарем.",
+    )
 
     prescriptions: List[Prescription] = Field(
         default_factory=list,
         description="Список препаратів або методів лікування, призначених лікарем.",
     )
 
-    doctor_notes: Optional[str] = Field(
+    patient_summary: Optional[str] = Field(
         None,
-        description="Додаткові нотатки або спостереження лікаря, що стосуються звернення.",
+        description="Короткий результат скарг та стану пацієнта на 3-4 речення.",
+    )
+
+    doctor_summary: Optional[str] = Field(
+        None,
+        description="Короткий висновок, пояснень і рекомендацій від лікаря на 3-4 речення.",
+    )
+
+
+class MedicalCard(MedicalCardBase):
+    document_date: date = Field(
+        default_factory=date.today,
     )
 
     @field_validator("document_date", mode="before")
@@ -88,3 +108,7 @@ class MedicalCard(BaseModel):
         if value in (None, "", "null", "None"):
             return date.today()
         return value
+
+
+class MedicalCardLLM(MedicalCardBase):
+    """Схема для відповіді LLM без системних полів (наприклад, дати документа)."""

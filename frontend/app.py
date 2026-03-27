@@ -7,22 +7,27 @@ import streamlit as st
 from client import DocumentGenerationClient
 
 BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://127.0.0.1:8000")
+STATE_DIALOGUE_TEXT = "dialogue_text"
+STATE_TRANSCRIPT_SOURCE_KEY = "transcript_source_key"
+STATE_DOCUMENT_BYTES = "document_bytes"
+STATE_DOCUMENT_MIME_TYPE = "document_mime_type"
+STATE_DOCUMENT_FILENAME = "document_filename"
 
 
 def format_generation_time(elapsed_seconds: float) -> str:
     return f"{elapsed_seconds:.2f} sec"
 
 
+def reset_document_state() -> None:
+    st.session_state.pop(STATE_DOCUMENT_BYTES, None)
+    st.session_state.pop(STATE_DOCUMENT_MIME_TYPE, None)
+    st.session_state.pop(STATE_DOCUMENT_FILENAME, None)
+
+
 def reset_review_state() -> None:
-    st.session_state.pop("transcript", None)
-    st.session_state.pop("numbered_transcript", None)
-    st.session_state.pop("segments", None)
-    st.session_state.pop("dialogue_turns", None)
-    st.session_state.pop("dialogue_text", None)
-    st.session_state.pop("transcript_source_key", None)
-    st.session_state.pop("document_bytes", None)
-    st.session_state.pop("document_mime_type", None)
-    st.session_state.pop("document_filename", None)
+    st.session_state.pop(STATE_DIALOGUE_TEXT, None)
+    st.session_state.pop(STATE_TRANSCRIPT_SOURCE_KEY, None)
+    reset_document_state()
 
 
 def apply_helsi_styles() -> None:
@@ -134,14 +139,14 @@ def render_audio_source_selector() -> tuple[bytes | None, str | None]:
 
 def generate_document_with_live_timer(
     client: DocumentGenerationClient,
-    transcript: str,
+    dialogue_text: str,
     output_format: str,
 ) -> tuple[bytes, str, str, float]:
     timer_placeholder = st.empty()
     start_time = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(client.generate_document_from_transcript, transcript, output_format)
+        future = executor.submit(client.generate_document_from_transcript, dialogue_text, output_format)
 
         while not future.done():
             elapsed_seconds = time.perf_counter() - start_time
@@ -165,7 +170,7 @@ def transcribe_audio_with_live_timer(
     client: DocumentGenerationClient,
     audio_bytes: bytes,
     audio_filename: str,
-) -> tuple[str, str, list[dict], list[dict], str, float]:
+) -> tuple[str, float]:
     timer_placeholder = st.empty()
     start_time = time.perf_counter()
 
@@ -180,14 +185,14 @@ def transcribe_audio_with_live_timer(
             )
             time.sleep(0.1)
 
-        transcript, numbered_transcript, segments, dialogue_turns, dialogue_text = future.result()
+        dialogue_text = future.result()
 
     elapsed_seconds = time.perf_counter() - start_time
     timer_placeholder.markdown(
         f'<div class="timer-banner">Transcription time: {format_generation_time(elapsed_seconds)}</div>',
         unsafe_allow_html=True,
     )
-    return transcript, numbered_transcript, segments, dialogue_turns, dialogue_text, elapsed_seconds
+    return dialogue_text, elapsed_seconds
 
 
 def render_generation_view(client: DocumentGenerationClient) -> None:
@@ -210,47 +215,41 @@ def render_generation_view(client: DocumentGenerationClient) -> None:
         return
 
     current_source_key = f"{audio_filename}:{len(audio_bytes)}"
-    previous_source_key = st.session_state.get("transcript_source_key")
+    previous_source_key = st.session_state.get(STATE_TRANSCRIPT_SOURCE_KEY)
     if previous_source_key != current_source_key:
         reset_review_state()
-        st.session_state["transcript_source_key"] = current_source_key
+        st.session_state[STATE_TRANSCRIPT_SOURCE_KEY] = current_source_key
 
     if st.button("Transcribe audio", use_container_width=True):
         try:
-            transcript, numbered_transcript, segments, dialogue_turns, dialogue_text, _ = transcribe_audio_with_live_timer(
+            dialogue_text, _ = transcribe_audio_with_live_timer(
                 client=client,
                 audio_bytes=audio_bytes,
                 audio_filename=audio_filename,
             )
-            st.session_state["transcript"] = transcript
-            st.session_state["numbered_transcript"] = numbered_transcript
-            st.session_state["segments"] = segments
-            st.session_state["dialogue_turns"] = dialogue_turns
-            st.session_state["dialogue_text"] = dialogue_text
-            st.session_state.pop("document_bytes", None)
-            st.session_state.pop("document_mime_type", None)
-            st.session_state.pop("document_filename", None)
+            st.session_state[STATE_DIALOGUE_TEXT] = dialogue_text
+            reset_document_state()
         except Exception as e:
             st.error(f"Error: {e}")
             return
 
-    dialogue_text_value = st.session_state.get("dialogue_text")
+    dialogue_text_value = st.session_state.get(STATE_DIALOGUE_TEXT)
     if dialogue_text_value is None:
         return
 
     st.divider()
     st.subheader("Doctor review")
-    approved_transcript = st.text_area(
-        "Review and edit transcript before approval",
+    approved_dialogue_text = st.text_area(
+        "Review and edit dialogue before approval",
         height=300,
-        key="dialogue_text",
+        key=STATE_DIALOGUE_TEXT,
     )
     doc_format = st.selectbox("Document format", ["PDF", "DOCX"])
-    is_approved = st.checkbox("I confirm that the transcript is reviewed and approved by the doctor.")
+    is_approved = st.checkbox("I confirm that the dialogue is reviewed and approved by the doctor.")
 
     if st.button("Generate document", use_container_width=True):
-        if not approved_transcript.strip():
-            st.warning("Transcript must not be empty.")
+        if not approved_dialogue_text.strip():
+            st.warning("Dialogue text must not be empty.")
             return
 
         if not is_approved:
@@ -260,17 +259,17 @@ def render_generation_view(client: DocumentGenerationClient) -> None:
         try:
             document_bytes, mime_type, filename, _ = generate_document_with_live_timer(
                 client=client,
-                transcript=approved_transcript,
+                dialogue_text=approved_dialogue_text,
                 output_format=doc_format.lower(),
             )
-            st.session_state["document_bytes"] = document_bytes
-            st.session_state["document_mime_type"] = mime_type
-            st.session_state["document_filename"] = filename
+            st.session_state[STATE_DOCUMENT_BYTES] = document_bytes
+            st.session_state[STATE_DOCUMENT_MIME_TYPE] = mime_type
+            st.session_state[STATE_DOCUMENT_FILENAME] = filename
         except Exception as e:
             st.error(f"Error: {e}")
             return
 
-    document_bytes = st.session_state.get("document_bytes")
+    document_bytes = st.session_state.get(STATE_DOCUMENT_BYTES)
     if document_bytes is None:
         return
 
@@ -281,8 +280,8 @@ def render_generation_view(client: DocumentGenerationClient) -> None:
     st.download_button(
         label="Download document",
         data=document_bytes,
-        file_name=st.session_state["document_filename"],
-        mime=st.session_state["document_mime_type"],
+        file_name=st.session_state[STATE_DOCUMENT_FILENAME],
+        mime=st.session_state[STATE_DOCUMENT_MIME_TYPE],
         use_container_width=True,
     )
 

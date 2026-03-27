@@ -3,6 +3,7 @@ from functools import lru_cache
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
+from backend.config import TEST_TRANSCRIPT_STUB, USE_TEST_TRANSCRIPT_STUB
 from backend.pipeline import MainPipeline
 from backend.utils import (
     ApprovedTranscriptRequest,
@@ -27,6 +28,10 @@ def healthcheck() -> dict[str, str]:
 
 @app.post("/transcribe-audio")
 async def transcribe_audio(audio_file: UploadFile = File(...)) -> TranscriptionResponse:
+    if USE_TEST_TRANSCRIPT_STUB:
+        logger.info("Returning test transcript stub for /transcribe-audio")
+        return TranscriptionResponse(dialogue_text=TEST_TRANSCRIPT_STUB)
+
     try:
         audio_bytes = await audio_file.read()
         pipeline = get_pipeline()
@@ -46,10 +51,6 @@ async def transcribe_audio(audio_file: UploadFile = File(...)) -> TranscriptionR
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     return TranscriptionResponse(
-        transcript=transcript,
-        numbered_transcript=numbered_transcript,
-        segments=speaker_labels.segments,
-        dialogue_turns=dialogue_turns.turns,
         dialogue_text=dialogue_text,
     )
 
@@ -62,7 +63,7 @@ def generate_document_from_transcript(request: ApprovedTranscriptRequest):
 
     try:
         document_bytes = get_pipeline().generate_document_from_transcript(
-            transcript=request.transcript,
+            dialogue_text=request.dialogue_text,
             output_format=output_format,
         )
     except Exception as e:

@@ -6,6 +6,7 @@ from backend.utils.logger import get_logger
 from backend.utils.medical_card_models import (
     Diagnosis,
     MedicalCard,
+    MedicalCardLLM,
     MedicalComplaint,
     PatientInfo,
     Prescription,
@@ -24,6 +25,7 @@ __all__ = [
     "DialogueTurns",
     "get_logger",
     "MedicalCard",
+    "MedicalCardLLM",
     "MedicalComplaint",
     "PatientInfo",
     "Prescription",
